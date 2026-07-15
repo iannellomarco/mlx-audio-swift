@@ -553,7 +553,11 @@ private extension MossTranscribeDiarizeModel {
         quantizedKVStart: Int = 0
     ) throws -> [Int] {
         var cache = makeCache()
-        let prefillStepSize = 2048
+        // Quantized prefill attention is unfused (scores materialize as a
+        // [heads, chunk, context] tensor), so its transient memory scales
+        // with the chunk size; a smaller chunk bounds that spike. The
+        // full-precision path keeps its fused kernel and original chunking.
+        let prefillStepSize = kvBits == nil ? 2048 : 512
         let totalTokens = promptIds.dim(1)
         var processedTokens = 0
 
