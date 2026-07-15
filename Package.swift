@@ -57,6 +57,10 @@ let package = Package(
             name: "mlx-audio-swift-lid",
             targets: ["mlx-audio-swift-lid"],
         ),
+        .executable(
+            name: "mlx-audio-swift-moss-tools",
+            targets: ["mlx-audio-swift-moss-tools"],
+        ),
 
     ],
     dependencies: [
@@ -273,6 +277,11 @@ let package = Package(
             exclude: [
                 "README.md",
             ]
+        ),
+        .executableTarget(
+            name: "mlx-audio-swift-moss-tools",
+            dependencies: ["MLXAudioCore", "MLXAudioSTT"],
+            path: "Sources/Tools/mlx-audio-swift-moss-tools"
         ),
 
         // MARK: - Tests
