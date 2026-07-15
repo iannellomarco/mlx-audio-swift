@@ -180,6 +180,7 @@ func runBench(flags: [String: String]) async throws {
     }
     let kvBits = flags["kv-bits"].flatMap(Int.init)
     let kvGroupSize = Int(flags["kv-group-size"] ?? "64") ?? 64
+    let quantizedKVStart = Int(flags["quantized-kv-start"] ?? "0") ?? 0
 
     let samples = try loadWAVSamples(path: wav)
     let durationSeconds = Double(samples.count) / 16_000.0
@@ -203,7 +204,8 @@ func runBench(flags: [String: String]) async throws {
         maxTokens: maxTokens,
         temperature: 0.0,
         kvBits: kvBits,
-        kvGroupSize: kvGroupSize)
+        kvGroupSize: kvGroupSize,
+        quantizedKVStart: quantizedKVStart)
     let wallSeconds = Date().timeIntervalSince(decodeStart)
     let peakFootprint = sampler.stop()
 
