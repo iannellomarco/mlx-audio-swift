@@ -1010,6 +1010,22 @@ extension MossTranscribeDiarizeModel {
             weights.merge(shard) { _, new in new }
         }
         let sanitized = sanitize(weights: weights)
+
+        // Quantized checkpoints: swap in QuantizedLinear/QuantizedEmbedding wherever the
+        // checkpoint carries scales, mirroring the Qwen3ASR quantized-load path. The audio
+        // tower (whisper encoder + vq adaptor) always stays dense.
+        if let perLayerQuantization = config.perLayerQuantization {
+            quantize(model: model) { path, module in
+                if path.hasPrefix("model.whisper_encoder") || path.hasPrefix("model.vq_adaptor") {
+                    return nil
+                }
+                if sanitized["\(path).scales"] != nil {
+                    return perLayerQuantization.quantization(layer: path)?.asTuple
+                }
+                return nil
+            }
+        }
+
         try model.update(parameters: ModuleParameters.unflattened(sanitized), verify: .all)
         model.train(false)
         eval(model)

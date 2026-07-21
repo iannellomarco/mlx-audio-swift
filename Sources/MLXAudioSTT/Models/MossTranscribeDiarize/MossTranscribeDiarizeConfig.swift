@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMCommon
 
 public struct MossTranscribeDiarizeConfig: Codable {
     public var modelType: String
@@ -9,6 +10,9 @@ public struct MossTranscribeDiarizeConfig: Codable {
     public var adaptorInputDim: Int?
     public var tieWordEmbeddings: Bool
     public var sampleRate: Int
+
+    // Quantization (read from the top-level "quantization" block, mirroring Qwen3ASRConfig)
+    public var perLayerQuantization: BaseConfiguration.PerLayerQuantization?
 
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
@@ -74,5 +78,20 @@ public struct MossTranscribeDiarizeConfig: Codable {
         adaptorInputDim = try container.decodeIfPresent(Int.self, forKey: .adaptorInputDim)
             ?? audioConfig.dModel * audioMergeSize
         sampleRate = try container.decodeIfPresent(Int.self, forKey: .sampleRate) ?? 16000
+
+        let baseConfig = try? BaseConfiguration(from: decoder)
+        perLayerQuantization = baseConfig?.perLayerQuantization
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(modelType, forKey: .modelType)
+        try container.encode(textConfig, forKey: .textConfig)
+        try container.encode(audioConfig, forKey: .audioConfig)
+        try container.encode(audioTokenId, forKey: .audioTokenId)
+        try container.encode(audioMergeSize, forKey: .audioMergeSize)
+        try container.encodeIfPresent(adaptorInputDim, forKey: .adaptorInputDim)
+        try container.encode(tieWordEmbeddings, forKey: .tieWordEmbeddings)
+        try container.encode(sampleRate, forKey: .sampleRate)
     }
 }
