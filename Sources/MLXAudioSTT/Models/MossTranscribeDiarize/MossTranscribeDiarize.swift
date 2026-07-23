@@ -288,7 +288,8 @@ public final class MossTranscribeDiarizeModel: Module, STTGenerationModel {
                 let audio = sendableAudio.value
                 do {
                     let start = Date()
-                    let prepared = try model.prepareGenerationInputs(audio: audio, prompt: nil)
+                    let prepared = try model.prepareGenerationInputs(
+                        audio: audio, prompt: nil, shouldStop: shouldStop)
                     if shouldStop?() == true { throw CancellationError() }
                     var generatedTokens: [Int] = []
                     var streamedText = ""
@@ -530,7 +531,10 @@ private extension MossTranscribeDiarizeModel {
         return MLXArray(tokenIds.map(Int32.init)).expandedDimensions(axis: 0)
     }
 
-    func prepareGenerationInputs(audio: MLXArray, prompt: String?) throws -> PreparedGenerationInputs {
+    func prepareGenerationInputs(
+        audio: MLXArray, prompt: String?, shouldStop: (() -> Bool)? = nil
+    ) throws -> PreparedGenerationInputs {
+        if shouldStop?() == true { throw CancellationError() }
         let (inputFeatures, audioLengths, chunkMapping, featureLengths, duration) = try preprocessAudio(audio)
         let audioTokenCount = featureLengths.reduce(0, +)
         let inputIds = try buildPrompt(audioTokenCount: audioTokenCount, prompt: prompt)
