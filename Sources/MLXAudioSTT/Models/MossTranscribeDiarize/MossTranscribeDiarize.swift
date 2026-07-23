@@ -268,6 +268,18 @@ public final class MossTranscribeDiarizeModel: Module, STTGenerationModel {
         audio: MLXArray,
         generationParameters: STTGenerateParameters
     ) -> AsyncThrowingStream<STTGeneration, Error> {
+        generateStream(audio: audio, generationParameters: generationParameters, shouldStop: nil)
+    }
+
+    /// As above, plus a cooperative stop the decode loops poll at chunk and
+    /// token boundaries. When it fires the stream finishes throwing
+    /// `CancellationError` — the generator exits CLEANLY at a boundary (no
+    /// orphaned MLX work), which is what makes an engine-side deadline safe.
+    public func generateStream(
+        audio: MLXArray,
+        generationParameters: STTGenerateParameters,
+        shouldStop: (@Sendable () -> Bool)?
+    ) -> AsyncThrowingStream<STTGeneration, Error> {
         let sendableModel = UncheckedSendableBox(self)
         let sendableAudio = UncheckedSendableBox(audio)
         return AsyncThrowingStream { continuation in
@@ -277,6 +289,7 @@ public final class MossTranscribeDiarizeModel: Module, STTGenerationModel {
                 do {
                     let start = Date()
                     let prepared = try model.prepareGenerationInputs(audio: audio, prompt: nil)
+                    if shouldStop?() == true { throw CancellationError() }
                     var generatedTokens: [Int] = []
                     var streamedText = ""
                     for token in try model.generateTokenIds(
@@ -288,7 +301,8 @@ public final class MossTranscribeDiarizeModel: Module, STTGenerationModel {
                         repetitionContextSize: generationParameters.repetitionContextSize,
                         kvBits: generationParameters.kvBits,
                         kvGroupSize: generationParameters.kvGroupSize,
-                        quantizedKVStart: generationParameters.quantizedKVStart
+                        quantizedKVStart: generationParameters.quantizedKVStart,
+                        shouldStop: shouldStop
                     ) {
                         generatedTokens.append(token)
                         let text = model.tokenizer?.decode(tokens: [token], skipSpecialTokens: true) ?? ""
@@ -319,7 +333,7 @@ public final class MossTranscribeDiarizeModel: Module, STTGenerationModel {
                     )))
                     continuation.finish()
                 } catch is CancellationError {
-                    continuation.finish()
+                    continuation.finish(throwing: CancellationError())
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -550,7 +564,8 @@ private extension MossTranscribeDiarizeModel {
         repetitionContextSize: Int,
         kvBits: Int? = nil,
         kvGroupSize: Int = 64,
-        quantizedKVStart: Int = 0
+        quantizedKVStart: Int = 0,
+        shouldStop: (() -> Bool)? = nil
     ) throws -> [Int] {
         var cache = makeCache()
         // Quantized prefill attention is unfused (scores materialize as a
@@ -562,6 +577,9 @@ private extension MossTranscribeDiarizeModel {
         var processedTokens = 0
 
         while totalTokens - processedTokens > 1 {
+            // Cooperative stop at a chunk boundary: the caller's deadline
+            // beats finishing a prefill that can span minutes.
+            if shouldStop?() == true { throw CancellationError() }
             let remaining = (totalTokens - processedTokens) - 1
             let n = min(prefillStepSize, remaining)
             let chunkIds = promptIds[0..., processedTokens..<(processedTokens + n)]
@@ -605,6 +623,9 @@ private extension MossTranscribeDiarizeModel {
         let eos = eosTokenIds()
 
         for tokenIndex in 0..<maxTokens {
+            // Cooperative stop at a token boundary (cheap: one closure call
+            // every 8 tokens against seconds-long generations).
+            if tokenIndex % 8 == 0, shouldStop?() == true { throw CancellationError() }
             let token = nextTokenArray.item(Int.self)
             if eos.contains(token) {
                 break
