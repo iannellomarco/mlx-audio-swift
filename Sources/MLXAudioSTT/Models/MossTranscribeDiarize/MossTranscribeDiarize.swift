@@ -26,6 +26,16 @@ public struct MossTranscribeDiarizeStreamingResult: Sendable {
     public let promptTokens: Int
     public let generationTokens: Int
 }
+/// Observable milestones from MOSS's long-running inference loop.
+///
+/// `prefilling` advances only after a prompt chunk has completed on the
+/// accelerator. `generating` advances only after a transcript token exists.
+/// Neither case predicts elapsed time or claims completion.
+public enum MossTranscribeDiarizeProgress: Equatable, Sendable {
+    case prefilling(processedTokens: Int, totalTokens: Int)
+    case generating(generatedTokens: Int)
+}
+
 
 public final class MossTranscribeDiarizeVQAdaptor: Module {
     @ModuleInfo(key: "layers") var layers: MLXNN.Sequential
@@ -278,7 +288,8 @@ public final class MossTranscribeDiarizeModel: Module, STTGenerationModel {
     public func generateStream(
         audio: MLXArray,
         generationParameters: STTGenerateParameters,
-        shouldStop: (@Sendable () -> Bool)?
+        shouldStop: (@Sendable () -> Bool)?,
+        onProgress: (@Sendable (MossTranscribeDiarizeProgress) -> Void)? = nil
     ) -> AsyncThrowingStream<STTGeneration, Error> {
         let sendableModel = UncheckedSendableBox(self)
         let sendableAudio = UncheckedSendableBox(audio)
@@ -303,7 +314,8 @@ public final class MossTranscribeDiarizeModel: Module, STTGenerationModel {
                         kvBits: generationParameters.kvBits,
                         kvGroupSize: generationParameters.kvGroupSize,
                         quantizedKVStart: generationParameters.quantizedKVStart,
-                        shouldStop: shouldStop
+                        shouldStop: shouldStop,
+                        onProgress: onProgress
                     ) {
                         generatedTokens.append(token)
                         let text = model.tokenizer?.decode(tokens: [token], skipSpecialTokens: true) ?? ""
@@ -569,7 +581,8 @@ private extension MossTranscribeDiarizeModel {
         kvBits: Int? = nil,
         kvGroupSize: Int = 64,
         quantizedKVStart: Int = 0,
-        shouldStop: (() -> Bool)? = nil
+        shouldStop: (() -> Bool)? = nil,
+        onProgress: (@Sendable (MossTranscribeDiarizeProgress) -> Void)? = nil
     ) throws -> [Int] {
         var cache = makeCache()
         // Quantized prefill attention is unfused (scores materialize as a
@@ -579,6 +592,7 @@ private extension MossTranscribeDiarizeModel {
         let prefillStepSize = kvBits == nil ? 2048 : 512
         let totalTokens = promptIds.dim(1)
         var processedTokens = 0
+        onProgress?(.prefilling(processedTokens: 0, totalTokens: totalTokens))
 
         while totalTokens - processedTokens > 1 {
             // Cooperative stop at a chunk boundary: the caller's deadline
@@ -603,6 +617,9 @@ private extension MossTranscribeDiarizeModel {
             )
             Memory.clearCache()
             processedTokens += n
+            onProgress?(.prefilling(
+                processedTokens: processedTokens,
+                totalTokens: totalTokens))
         }
 
         let lastIds = promptIds[0..., processedTokens..<totalTokens]
@@ -631,10 +648,18 @@ private extension MossTranscribeDiarizeModel {
             // every 8 tokens against seconds-long generations).
             if tokenIndex % 8 == 0, shouldStop?() == true { throw CancellationError() }
             let token = nextTokenArray.item(Int.self)
+            if tokenIndex == 0 {
+                // `item` is the synchronization point for the final prompt
+                // token, so only now is prefill genuinely complete.
+                onProgress?(.prefilling(
+                    processedTokens: totalTokens,
+                    totalTokens: totalTokens))
+            }
             if eos.contains(token) {
                 break
             }
             generated.append(token)
+            onProgress?(.generating(generatedTokens: generated.count))
 
             if repetitionPenalty == 1.0 && generated.count >= 24 {
                 let tail = generated.suffix(24)
